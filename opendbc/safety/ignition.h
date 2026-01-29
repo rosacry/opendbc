@@ -2,54 +2,62 @@
 
 #include "opendbc/safety/declarations.h"
 
-bool ignition_can = false;
-uint32_t ignition_can_cnt = 0U;
-static int prev_rivian_cnt = -1;
-static int prev_tesla_cnt = -1;
+extern bool ignition_can;
+extern uint32_t ignition_can_cnt;
 
-static void ignition_can_hook(const CANPacket_t *to_push) {
-  int len = GET_LEN(to_push);
+void ignition_can_hook(const CANPacket_t *msg) {
+  if (msg->bus == 0U) {
+    int len = GET_LEN(msg);
 
-  if ((to_push->bus == 0U) && (len == 8)) {
-    int addr = to_push->addr;
-
-    // GM: SystemPowerMode 2=Run, 3=Crank
-    if (addr == 0x1F1) {
-      ignition_can = (to_push->data[0] & 0x2U) != 0U;
+    // GM exception
+    if ((msg->addr == 0x1F1U) && (len == 8)) {
+      // SystemPowerMode (2=Run, 3=Crank Request)
+      ignition_can = (msg->data[0] & 0x2U) != 0U;
       ignition_can_cnt = 0U;
     }
 
-    // Rivian: 0x152 overlaps Subaru pre-global high beam, use counter to distinguish
-    if (addr == 0x152) {
-      int cnt = to_push->data[1] & 0xFU;
-      if ((cnt == ((prev_rivian_cnt + 1) % 15)) && (prev_rivian_cnt != -1)) {
-        ignition_can = ((to_push->data[7] >> 4U) & 0x3U) == 1U;
+    // Rivian R1S/T GEN1 exception
+    if ((msg->addr == 0x152U) && (len == 8)) {
+      // 0x152 overlaps with Subaru pre-global which has this bit as the high
+      // beam
+      int counter = msg->data[1] & 0xFU; // max is only 14
+
+      static int prev_counter_rivian = -1;
+      if ((counter == ((prev_counter_rivian + 1) % 15)) &&
+          (prev_counter_rivian != -1)) {
+        // VDM_OutputSignals->VDM_EpasPowerMode
+        ignition_can =
+            ((msg->data[7] >> 4U) & 0x3U) == 1U; // VDM_EpasPowerMode_Drive_On=1
         ignition_can_cnt = 0U;
       }
-      prev_rivian_cnt = cnt;
+      prev_counter_rivian = counter;
     }
 
-    // Tesla: 0x221 may overlap with other OEMs, use counter to distinguish
-    if (addr == 0x221) {
-      int cnt = to_push->data[6] >> 4;
-      if ((cnt == ((prev_tesla_cnt + 1) % 16)) && (prev_tesla_cnt != -1)) {
-        ignition_can = ((to_push->data[0] >> 5U) & 0x3U) == 0x3U;
+    // Tesla Model 3/Y exception
+    if ((msg->addr == 0x221U) && (len == 8)) {
+      // 0x221 overlaps with Rivian which has random data on byte 0
+      int counter = msg->data[6] >> 4;
+
+      static int prev_counter_tesla = -1;
+      if ((counter == ((prev_counter_tesla + 1) % 16)) &&
+          (prev_counter_tesla != -1)) {
+        // VCFRONT_LVPowerState->VCFRONT_vehiclePowerState
+        int power_state = (msg->data[0] >> 5U) & 0x3U;
+        ignition_can = power_state == 0x3; // VEHICLE_POWER_STATE_DRIVE=3
         ignition_can_cnt = 0U;
       }
-      prev_tesla_cnt = cnt;
+      prev_counter_tesla = counter;
     }
 
-    // Mazda
-    if (addr == 0x9E) {
-      ignition_can = (to_push->data[0] >> 5) == 0x6U;
+    // Mazda exception
+    if ((msg->addr == 0x9EU) && (len == 8)) {
+      ignition_can = (msg->data[0] >> 5) == 0x6U;
       ignition_can_cnt = 0U;
     }
   }
 }
 
-static void ignition_can_init(void) {
+void ignition_can_init(void) {
   ignition_can = false;
   ignition_can_cnt = 0U;
-  prev_rivian_cnt = -1;
-  prev_tesla_cnt = -1;
 }
